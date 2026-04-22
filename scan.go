@@ -8,6 +8,8 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"sync"
+	"time"
 )
 
 type config struct {
@@ -16,6 +18,7 @@ type config struct {
 }
 
 var ErrHostNotSpecified = errors.New("host not specified")
+var ErrInvalidPort = errors.New("port out of range [1,65535]")
 
 func main() {
 	c, err := parseArgs(os.Stdout, os.Args[1:])
@@ -28,7 +31,6 @@ func main() {
 		fmt.Fprint(os.Stdout, err)
 		return
 	}
-	fmt.Println("connection established")
 }
 
 func parseArgs(w io.Writer, args []string) (*config, error) {
@@ -46,6 +48,9 @@ func parseArgs(w io.Writer, args []string) (*config, error) {
 	parsedArgs := fs.Args()
 	if len(parsedArgs) > 0 {
 		return nil, err
+	}
+	if c.port != -1 && (c.port < 1 || c.port > 65535) {
+		return nil, ErrInvalidPort
 	}
 	return &c, nil
 }
@@ -69,7 +74,7 @@ func runCmd(c *config) error {
 
 func connect(host string, port int) error {
 	addr := net.JoinHostPort(host, strconv.Itoa(port))
-	conn, err := net.Dial("tcp", addr)
+	conn, err := net.DialTimeout("tcp", addr, 1000*time.Millisecond)
 	if err != nil {
 		return err
 	}
@@ -78,12 +83,26 @@ func connect(host string, port int) error {
 }
 
 func scan(host string) error {
+	var wg sync.WaitGroup
+	activePorts := make(chan int, 2)
+
 	for i := 1; i <= 65535; i++ {
-		err := connect(host, i)
-		if err != nil {
-			continue
-		}
-		fmt.Printf("port %d is open\n", i)
+		wg.Add(1)
+		go func(port int) {
+			defer wg.Done()
+			err := connect(host, port)
+			if err == nil {
+				activePorts <- port
+			}
+		}(i)
+	}
+	go func() {
+		wg.Wait()
+		close(activePorts)
+	}()
+
+	for port := range activePorts {
+		fmt.Printf("port %d is active\n", port)
 	}
 	return nil
 }
