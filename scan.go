@@ -8,27 +8,29 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
 
 type config struct {
-	host string
-	port int
+	hosts []string
+	port  int
 }
 
-var ErrHostNotSpecified = errors.New("host not specified")
+var ErrHostNotSpecified = errors.New("hosts not specified")
 var ErrInvalidPort = errors.New("port out of range [1,65535]")
+var ErrUnexpectedPosArgs = errors.New("received positional args while expected none")
 
 func main() {
-	c, err := parseArgs(os.Stdout, os.Args[1:])
+	c, err := parseArgs(os.Stderr, os.Args[1:])
 	if err != nil {
-		fmt.Fprint(os.Stdout, err)
+		fmt.Fprint(os.Stderr, err)
 		return
 	}
 	err = runCmd(c)
 	if err != nil {
-		fmt.Fprint(os.Stdout, err)
+		fmt.Fprint(os.Stderr, err)
 		return
 	}
 }
@@ -37,8 +39,8 @@ func parseArgs(w io.Writer, args []string) (*config, error) {
 	c := config{}
 	fs := flag.NewFlagSet("port scanner", flag.ContinueOnError)
 	fs.SetOutput(w)
-
-	fs.StringVar(&c.host, "host", "", "give host name")
+	var hostStr string
+	fs.StringVar(&hostStr, "hosts", "", "hosts name / names")
 	fs.IntVar(&c.port, "port", -1, "give target port")
 
 	err := fs.Parse(args)
@@ -47,7 +49,10 @@ func parseArgs(w io.Writer, args []string) (*config, error) {
 	}
 	parsedArgs := fs.Args()
 	if len(parsedArgs) > 0 {
-		return nil, err
+		return nil, ErrUnexpectedPosArgs
+	}
+	if hostStr != "" {
+		c.hosts = strings.Split(hostStr, ",")
 	}
 	if c.port != -1 && (c.port < 1 || c.port > 65535) {
 		return nil, ErrInvalidPort
@@ -56,15 +61,19 @@ func parseArgs(w io.Writer, args []string) (*config, error) {
 }
 
 func runCmd(c *config) error {
-	if c.host != "" && c.port != -1 {
-		err := connect(c.host, c.port)
+	// given single host and port , find if that port is open or not
+	if len(c.hosts) == 1 && c.port != -1 {
+		err := connect(c.hosts[0], c.port)
 		if err != nil {
 			return err
 		}
-	} else if c.host != "" {
-		err := scan(c.host)
-		if err != nil {
-			return err
+		// run scan on single/multiple host to find any open port
+	} else if len(c.hosts) >= 1 {
+		for _, host := range c.hosts {
+			err := scan(host)
+			if err != nil {
+				return err
+			}
 		}
 	} else {
 		return ErrHostNotSpecified
@@ -84,7 +93,7 @@ func connect(host string, port int) error {
 
 func scan(host string) error {
 	var wg sync.WaitGroup
-	activePorts := make(chan int, 2)
+	activePorts := make(chan int, 20)
 
 	for i := 1; i <= 65535; i++ {
 		wg.Add(1)
